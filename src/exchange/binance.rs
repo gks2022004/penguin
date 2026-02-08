@@ -38,7 +38,7 @@ pub struct DepthEvent {
     pub asks: Vec<[String; 2]>,
 }
 
-pub async fn stream_depth(symbol: &str, sender: tokio::sync::mpsc::Sender<DepthEvent>) {
+pub async fn stream_depth(symbol: String, sender: tokio::sync::mpsc::Sender<DepthEvent>) {
     let url = format!(
         "wss://stream.binance.com:9443/ws/{}@depth@100ms",
         symbol.to_lowercase()

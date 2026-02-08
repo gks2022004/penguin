@@ -8,13 +8,19 @@ mod risk;
 mod execution;
 mod portfolio;
 
+use crate::config::AppConfig;
 use crate::strategy::Strategy;
 
 #[tokio::main]
 async fn main() {
+	let _ = dotenvy::dotenv();
 	let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+	let config = AppConfig::from_env();
+	let stream_symbol = config.symbol.clone();
 
-	tokio::spawn(exchange::binance::stream_depth("BTCUSDT", tx));
+	tokio::spawn(async move {
+		exchange::binance::stream_depth(stream_symbol, tx).await;
+	});
 
 	let mut buffered = Vec::new();
 	while let Some(event) = rx.recv().await {
@@ -24,11 +30,11 @@ async fn main() {
 		}
 	}
 
-	let snapshot = exchange::binance::fetch_snapshot("BTCUSDT").await;
+	let snapshot = exchange::binance::fetch_snapshot(&config.symbol).await;
 	let mut book = exchange::binance::snapshot_to_orderbook(snapshot);
 	let mut last_mid: Option<f64> = None;
-	let mut strategy = strategy::SimpleMidStrategy::new(0.5);
-	let risk = risk::RiskEngine::new(1.0, 0.1);
+	let mut strategy = strategy::SimpleMidStrategy::new(config.mid_threshold);
+	let risk = risk::RiskEngine::new(config.max_position, config.max_order_size);
 	let execution = execution::ExecutionEngine::new();
 	let mut portfolio = portfolio::Portfolio::new();
 
@@ -57,7 +63,9 @@ async fn main() {
 							println!("MID: {:.2}", mid);
 							last_mid = Some(mid);
 							let signal = strategy.on_mid(mid);
+							println!("SIGNAL: {:?} | POS: {:.4}", signal, portfolio.position);
 							if let Some(order) = risk.evaluate(signal, portfolio.position) {
+								println!("RISK: PASS | ORDER: {:?} {:.4}", order.side, order.qty);
 								let fill = execution.execute(order, mid, &mut portfolio);
 								let pnl = portfolio.unrealized_pnl(mid);
 								println!(
@@ -68,6 +76,8 @@ async fn main() {
 									portfolio.position,
 									pnl
 								);
+							} else {
+								println!("RISK: BLOCK");
 							}
 						}
 					}
@@ -75,10 +85,10 @@ async fn main() {
 				market::sync::SyncStatus::Ignored => {}
 				market::sync::SyncStatus::Desync => {
 					println!("DESYNC — rebuilding order book");
-					let snapshot = exchange::binance::fetch_snapshot("BTCUSDT").await;
+					let snapshot = exchange::binance::fetch_snapshot(&config.symbol).await;
 					book = exchange::binance::snapshot_to_orderbook(snapshot);
 					last_mid = None;
-					strategy = strategy::SimpleMidStrategy::new(0.5);
+					strategy = strategy::SimpleMidStrategy::new(config.mid_threshold);
 				}
 			}
 		}
