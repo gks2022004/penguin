@@ -3,6 +3,12 @@ mod exchange;
 mod market;
 mod infra;
 mod ui;
+mod strategy;
+mod risk;
+mod execution;
+mod portfolio;
+
+use crate::strategy::Strategy;
 
 #[tokio::main]
 async fn main() {
@@ -21,6 +27,10 @@ async fn main() {
 	let snapshot = exchange::binance::fetch_snapshot("BTCUSDT").await;
 	let mut book = exchange::binance::snapshot_to_orderbook(snapshot);
 	let mut last_mid: Option<f64> = None;
+	let mut strategy = strategy::SimpleMidStrategy::new(0.5);
+	let risk = risk::RiskEngine::new(1.0, 0.1);
+	let execution = execution::ExecutionEngine::new();
+	let mut portfolio = portfolio::Portfolio::new();
 
 	buffered.sort_by_key(|e| e.final_update_id);
 	for event in buffered {
@@ -46,6 +56,19 @@ async fn main() {
 						if changed {
 							println!("MID: {:.2}", mid);
 							last_mid = Some(mid);
+							let signal = strategy.on_mid(mid);
+							if let Some(order) = risk.evaluate(signal, portfolio.position) {
+								let fill = execution.execute(order, mid, &mut portfolio);
+								let pnl = portfolio.unrealized_pnl(mid);
+								println!(
+									"FILL: {:?} {:.4} @ {:.2} | POS: {:.4} | PNL: {:.2}",
+									fill.side,
+									fill.qty,
+									fill.price,
+									portfolio.position,
+									pnl
+								);
+							}
 						}
 					}
 				}
@@ -55,6 +78,7 @@ async fn main() {
 					let snapshot = exchange::binance::fetch_snapshot("BTCUSDT").await;
 					book = exchange::binance::snapshot_to_orderbook(snapshot);
 					last_mid = None;
+					strategy = strategy::SimpleMidStrategy::new(0.5);
 				}
 			}
 		}
