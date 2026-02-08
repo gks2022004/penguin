@@ -2,6 +2,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::time::{sleep, Duration};
 use tokio_tungstenite::connect_async;
 
 use crate::market::orderbook::OrderBook;
@@ -43,35 +44,54 @@ pub async fn stream_depth(symbol: &str, sender: tokio::sync::mpsc::Sender<DepthE
         symbol.to_lowercase()
     );
 
-    let (ws, _) = connect_async(url).await.unwrap();
-    let (_, mut read) = ws.split();
+    let mut backoff = Duration::from_secs(1);
+    let max_backoff = Duration::from_secs(30);
 
-    while let Some(msg) = read.next().await {
-        let text = match msg {
-            Ok(message) => match message.into_text() {
-                Ok(text) => text,
+    loop {
+        let (ws, _) = match connect_async(&url).await {
+            Ok(result) => {
+                backoff = Duration::from_secs(1);
+                result
+            }
+            Err(_) => {
+                sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
+                continue;
+            }
+        };
+
+        let (_, mut read) = ws.split();
+
+        while let Some(msg) = read.next().await {
+            let text = match msg {
+                Ok(message) => match message.into_text() {
+                    Ok(text) => text,
+                    Err(_) => continue,
+                },
+                Err(_) => break,
+            };
+
+            let value: Value = match serde_json::from_str(&text) {
+                Ok(value) => value,
                 Err(_) => continue,
-            },
-            Err(_) => continue,
-        };
+            };
 
-        let value: Value = match serde_json::from_str(&text) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
+            if value.get("b").is_none() || value.get("a").is_none() {
+                continue;
+            }
 
-        if value.get("b").is_none() || value.get("a").is_none() {
-            continue;
+            let event: DepthEvent = match serde_json::from_value(value) {
+                Ok(event) => event,
+                Err(_) => continue,
+            };
+
+            if sender.send(event).await.is_err() {
+                return;
+            }
         }
 
-        let event: DepthEvent = match serde_json::from_value(value) {
-            Ok(event) => event,
-            Err(_) => continue,
-        };
-
-        if sender.send(event).await.is_err() {
-            break;
-        }
+        sleep(backoff).await;
+        backoff = (backoff * 2).min(max_backoff);
     }
 }
 
