@@ -2,21 +2,21 @@ use crate::exchange::binance::DepthEvent;
 use crate::market::orderbook::{OrderBook, OrderedFloat};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApplyDeltaOutcome {
+pub enum SyncStatus {
 	Applied,
-	Skipped,
+	Ignored,
 	Desync,
 }
 
-pub fn apply_delta(event: DepthEvent, book: &mut OrderBook) -> ApplyDeltaOutcome {
+pub fn apply_delta(event: DepthEvent, book: &mut OrderBook) -> SyncStatus {
 	if event.final_update_id <= book.last_update_id {
-		return ApplyDeltaOutcome::Skipped;
+		return SyncStatus::Ignored;
 	}
 
 	let expected_next = book.last_update_id + 1;
 	let in_range = event.first_update_id <= expected_next && event.final_update_id >= expected_next;
 	if !in_range {
-		return ApplyDeltaOutcome::Desync;
+		return SyncStatus::Desync;
 	}
 
 	for [price, qty] in event.bids {
@@ -42,5 +42,5 @@ pub fn apply_delta(event: DepthEvent, book: &mut OrderBook) -> ApplyDeltaOutcome
 	}
 
 	book.last_update_id = event.final_update_id;
-	ApplyDeltaOutcome::Applied
+	SyncStatus::Applied
 }

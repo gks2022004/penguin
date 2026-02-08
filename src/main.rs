@@ -25,12 +25,13 @@ async fn main() {
 	buffered.sort_by_key(|e| e.final_update_id);
 	for event in buffered {
 		match market::sync::apply_delta(event, &mut book) {
-			market::sync::ApplyDeltaOutcome::Applied => {}
-			market::sync::ApplyDeltaOutcome::Skipped => {}
-			market::sync::ApplyDeltaOutcome::Desync => {
-				println!("DESYNC DETECTED – resyncing snapshot");
+			market::sync::SyncStatus::Applied => {}
+			market::sync::SyncStatus::Ignored => {}
+			market::sync::SyncStatus::Desync => {
+				println!("DESYNC — rebuilding order book");
 				let snapshot = exchange::binance::fetch_snapshot("BTCUSDT").await;
 				book = exchange::binance::snapshot_to_orderbook(snapshot);
+				last_mid = None;
 			}
 		}
 	}
@@ -38,7 +39,7 @@ async fn main() {
 	loop {
 		if let Some(event) = rx.recv().await {
 			match market::sync::apply_delta(event, &mut book) {
-				market::sync::ApplyDeltaOutcome::Applied => {
+				market::sync::SyncStatus::Applied => {
 					if let (Some((bp, _)), Some((ap, _))) = (book.best_bid(), book.best_ask()) {
 						let mid = (bp + ap) / 2.0;
 						let changed = last_mid.map_or(true, |prev| (mid - prev).abs() > 0.0);
@@ -48,9 +49,9 @@ async fn main() {
 						}
 					}
 				}
-				market::sync::ApplyDeltaOutcome::Skipped => {}
-				market::sync::ApplyDeltaOutcome::Desync => {
-					println!("DESYNC DETECTED – resyncing snapshot");
+				market::sync::SyncStatus::Ignored => {}
+				market::sync::SyncStatus::Desync => {
+					println!("DESYNC — rebuilding order book");
 					let snapshot = exchange::binance::fetch_snapshot("BTCUSDT").await;
 					book = exchange::binance::snapshot_to_orderbook(snapshot);
 					last_mid = None;
